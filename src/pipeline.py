@@ -256,11 +256,6 @@ def ko_candidates(tl, side, pokemons, levels, chart):
             cands.append((n, h, est))
     return cands
 
-# One-time data setup: load the data and build the shared tables once.
-train = load_jsonl("train.jsonl")
-test = load_jsonl("test.jsonl")
-chart = load_type_chart()
-pokemons = build_pokemon_table()
 #####################
 
 #####################
@@ -568,26 +563,7 @@ def fit_and_aggregate(train_p1, eval_p2, n_battles):
     model, feature_columns = fit_faint_model(train_p1)
     return aggregate_hidden_faints(model, feature_columns, eval_p2, n_battles)
 
-train = load_jsonl("train.jsonl")
-test = load_jsonl("test.jsonl")
-chart = load_type_chart()
-pokemons = build_pokemon_table()
 
-tr_p1, tr_p2 = build_events(train, chart, pokemons)
-te_p1, te_p2 = build_events(test, chart, pokemons)
-print(f"Train: {len(tr_p1):,} (P1) / {len(tr_p2):,} (P2)")
-print(f"Test: {len(te_p1):,} (P1) / {len(te_p2):,} (P2)")
-
-ko_oof = evaluate_faint_model(tr_p1, n_splits=5)
-
-# Train on P1 and evaluate on test P1 (holdout) to see if the model generalizes well.
-ko_model, ko_columns = fit_faint_model(tr_p1)
-evaluate_holdout(ko_model, ko_columns, te_p1, title="test P1 (holdout)")
-
-# Now we can use the trained model to aggregate hidden faints in P2 events.
-agg_tr = aggregate_hidden_faints(ko_model, ko_columns, tr_p2, len(train))
-agg_te = aggregate_hidden_faints(ko_model, ko_columns, te_p2, len(test))
-print("aggregates: ", agg_tr.shape, agg_te.shape)
 
 
 # ko_model_final, ko_columns = fit_faint_model(tr_p1 + te_p1)
@@ -833,9 +809,6 @@ def build_profile(battles):
         profile[name] = prof
     return profile
 
-priors, gpriors = pokemons_move_priors(train + test)
-med_sp = median_pokemons(pokemons)
-profile = build_profile(train + test)
 #####################
 
 #####################
@@ -1617,19 +1590,6 @@ def build_curated():
 #####################
 #7. Optuna Hyperparameter Tuning
 
-t0 = time.time()
-X_train, y_train, X_test, test_ids = build_curated()
-print("train", X_train.shape, "| test", X_test.shape, f"({time.time() - t0:.0f}s)")
-
-optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-inner_folds_tuning = list(
-    StratifiedKFold(
-        n_splits=3,
-        shuffle=True,
-        random_state=SEED
-    ).split(X_train, y_train)
-)
 
 def print_trial_callback(study, trial):
     """
@@ -1767,10 +1727,6 @@ def run_study(objective, name, n_trials, timeout=None):
     print(f"Best Params: {study.best_params}\n")
 
     return study
-# Try all models to find the best parameters
-study_lr  = run_study(objective_lr,  "lr",  n_trials=30)
-study_xgb = run_study(objective_xgb, "xgb", n_trials=40, timeout=60*60)
-study_cb  = run_study(objective_cb,  "cb",  n_trials=40, timeout=60*60)
 
 #####################
 
@@ -1780,76 +1736,12 @@ study_cb  = run_study(objective_cb,  "cb",  n_trials=40, timeout=60*60)
 """
 Best hyperparameters from Optuna optimization.
 """
-best_logreg_c = float(study_lr.best_params["C"])
-best_xgb_params = study_xgb.best_params
-best_catboost_params = study_cb.best_params
-
 NUM_FOLDS = 10
-cv_folds = list(
-    StratifiedKFold(
-        n_splits=NUM_FOLDS, shuffle=True, random_state=SEED
-    ).split(X_train, y_train)
-)
 
 """
 Hyperparameter configurations for XGBoost and CatBoost (Hand-tuned + Optuna).
 """
-xgb_params_depth4 = dict(
-    n_estimators=900,
-    learning_rate=0.02,
-    max_depth=4,
-    subsample=0.85,
-    colsample_bytree=0.7,
-    reg_lambda=3.0,
-    min_child_weight=10,
-    reg_alpha=0.5,
-    eval_metric="logloss",
-    tree_method="hist",
-    n_jobs=-1,
-    random_state=SEED,
-)
-xgb_params_depth3 = {
-    **xgb_params_depth4,
-    "max_depth": 3,
-    "n_estimators": 1000,
-    "random_state": SEED,
-}
-xgb_params_optuna = {
-    **best_xgb_params,
-    "eval_metric": "logloss",
-    "tree_method": "hist",
-    "n_jobs": -1,
-    "random_state": SEED,
-}
 
-catboost_params_depth4 = dict(
-    iterations=1200,
-    learning_rate=0.02,
-    depth=4,
-    l2_leaf_reg=5.0,
-    subsample=0.85,
-    rsm=0.7,
-    loss_function="Logloss",
-    eval_metric="Logloss",
-    random_seed=SEED,
-    thread_count=-1,
-    verbose=0,
-)
-catboost_params_depth5 = {
-    **catboost_params_depth4,
-    "depth": 5,
-    "iterations": 1000,
-    "l2_leaf_reg": 7.0,
-    "random_seed": 2,
-}
-catboost_params_optuna = {
-    **best_catboost_params,
-    "loss_function": "Logloss",
-    "eval_metric": "Logloss",
-    "thread_count": -1,
-    "verbose": 0,
-    "random_seed": SEED,
-}
 
 
 def train_and_eval_logreg(reg_strength_c, model_label=""):
@@ -1958,134 +1850,10 @@ def train_and_eval_catboost(cb_params, model_label=""):
 """
 1. Train Logistic Regression models with different C values and average their predictions.
 """
-logreg_oof_list, logreg_test_list = [], []
-c_values_to_test = [0.003, 0.01, 0.05, best_logreg_c]
 
-for idx, c_value in enumerate(c_values_to_test):
-    label = f"Opt C={c_value:.4f}" if idx == 3 else f"C={c_value}"
-    model_oof, model_test = train_and_eval_logreg(c_value, model_label=label)
-    logreg_oof_list.append(model_oof)
-    logreg_test_list.append(model_test)
-
-logreg_ensemble_oof = np.mean(logreg_oof_list, axis=0)
-logreg_ensemble_test = np.mean(logreg_test_list, axis=0)
-print(f"\tLR ENSEMBLE: acc={accuracy_score(y_train, logreg_ensemble_oof > 0.5):.4f}, logloss={log_loss(y_train, logreg_ensemble_oof):.4f}\n", flush=True)
-
-"""
-2. Train XGBoost models with different parameter sets and average their predictions.
-"""
-xgb_d4_oof, xgb_d4_test = train_and_eval_xgb(
-    xgb_params_depth4, model_label="d4"
-)
-xgb_d3_oof, xgb_d3_test = train_and_eval_xgb(
-    xgb_params_depth3, model_label="d3"
-)
-xgb_opt_oof, xgb_opt_test = train_and_eval_xgb(
-    xgb_params_optuna, model_label="Optuna"
-)
-
-xgb_ensemble_oof = (xgb_d4_oof + xgb_d3_oof + xgb_opt_oof) / 3.0
-xgb_ensemble_test = (xgb_d4_test + xgb_d3_test + xgb_opt_test) / 3.0
-print(f"\tXGB ENSEMBLE: acc={accuracy_score(y_train, xgb_ensemble_oof > 0.5):.4f}, logloss={log_loss(y_train, xgb_ensemble_oof):.4f}\n", flush=True)
-
-"""
-3. Train CatBoost models with different parameter sets and average their predictions.
-"""
-cb_d4_oof, cb_d4_test = train_and_eval_catboost(
-    catboost_params_depth4, model_label="d4"
-)
-cb_d5_oof, cb_d5_test = train_and_eval_catboost(
-    catboost_params_depth5, model_label="d5"
-)
-cb_opt_oof, cb_opt_test = train_and_eval_catboost(
-    catboost_params_optuna, model_label="Optuna"
-)
-
-catboost_ensemble_oof = (cb_d4_oof + cb_d5_oof + cb_opt_oof) / 3.0
-catboost_ensemble_test = (cb_d4_test + cb_d5_test + cb_opt_test) / 3.0
-print(f"\tCB ENSEMBLE: acc={accuracy_score(y_train, catboost_ensemble_oof > 0.5):.4f}, logloss={log_loss(y_train, catboost_ensemble_oof):.4f}\n", flush=True)
-
-
-"""
-4. Find optimal blending weights for the 3 model families (LR, XGB, CB) using Scipy minimize.
-"""
-stacked_oof_matrix = np.column_stack(
-    [logreg_ensemble_oof, xgb_ensemble_oof, catboost_ensemble_oof]
-)
-stacked_test_matrix = np.column_stack(
-    [logreg_ensemble_test, xgb_ensemble_test, catboost_ensemble_test]
-)
-
-unbiased_blended_oof = np.zeros(len(y_train))
-fold_optimal_weights = []
-
-for train_idx, val_idx in cv_folds:
-    optimization_result = minimize(
-        lambda weights: log_loss(
-            y_train[train_idx], stacked_oof_matrix[train_idx] @ weights
-        ),
-        x0=[0.60, 0.20, 0.20],
-        method="SLSQP",
-        bounds=[(0, 1)] * 3,
-        constraints={"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},
-    )
-    best_fold_weights = optimization_result.x
-    fold_optimal_weights.append(best_fold_weights)
-    unbiased_blended_oof[val_idx] = (
-        stacked_oof_matrix[val_idx] @ best_fold_weights
-    )
-
-final_blend_weights = np.mean(fold_optimal_weights, axis=0)
-final_blended_oof = stacked_oof_matrix @ final_blend_weights
-final_blended_test_predictions = stacked_test_matrix @ final_blend_weights
-
-print(f"Optimal weights [LR, XGB, CB]: [{final_blend_weights[0]:.3f}, {final_blend_weights[1]:.3f}, {final_blend_weights[2]:.3f}]")
-print(f"BLEND (Unbiased): acc@0.50={accuracy_score(y_train, unbiased_blended_oof > 0.50):.4f}, logloss={log_loss(y_train, unbiased_blended_oof):.4f}")
-print(f"BLEND (Final Weighted): acc@0.50={accuracy_score(y_train, final_blended_oof > 0.50):.4f}, logloss={log_loss(y_train, final_blended_oof):.4f}")
 
 #####################
 
 #####################
 #9. Submission
 
-sample_submission = pd.read_csv(f"{DATA_DIR}/sample_submission.csv")
-Path(f"./output").mkdir(parents=True, exist_ok=True)
-
-DECISION_THRESHOLDS = (0.46, 0.47, 0.48, 0.49, 0.50, 0.51, 0.52)
-
-print("-----------------------------------------------------------")
-
-for threshold in DECISION_THRESHOLDS:
-    binary_test_predictions = (
-        final_blended_test_predictions > threshold
-    ).astype(int)
-
-    submission_df = pd.DataFrame({
-        "battle_id": test_ids,
-        "player_won": binary_test_predictions,
-    })
-
-    threshold_str = (
-        f"{int(round(threshold * 100)):03d}"
-    )
-    output_file_path = (
-        f"./output/submission_curated_{threshold_str}.csv"
-    )
-    submission_df.to_csv(output_file_path, index=False)
-
-    final_oof_accuracy = accuracy_score(
-        y_train, final_blended_oof > threshold
-    )
-    unbiased_oof_accuracy = accuracy_score(
-        y_train, unbiased_blended_oof > threshold
-    )
-
-    win_rate_in_test = submission_df["player_won"].mean()
-    total_wins_in_test = submission_df["player_won"].sum()
-    total_test_battles = len(submission_df)
-
-    print(f"Threshold {threshold:.2f} saved @ {output_file_path}")
-    print(f"OOF acc={final_oof_accuracy:.4f} (unbiased={unbiased_oof_accuracy:.4f})")
-    print(f"predicted p1 won in TEST={win_rate_in_test:.4f} ({total_wins_in_test}/{total_test_battles})\n")
-
-print("-----------------------------------------------------------")
