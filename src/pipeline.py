@@ -589,7 +589,7 @@ agg_tr = aggregate_hidden_faints(ko_model, ko_columns, tr_p2, len(train))
 agg_te = aggregate_hidden_faints(ko_model, ko_columns, te_p2, len(test))
 print("aggregates: ", agg_tr.shape, agg_te.shape)
 
-# The following lines are commented out because I don't know if this could be leakage. Should not be the case tho. Simone, tell me what you think of this.
+
 # ko_model_final, ko_columns = fit_faint_model(tr_p1 + te_p1)
 # agg_tr = aggregate_hidden_faints(ko_model_final, ko_columns, tr_p2, len(train))
 # agg_te = aggregate_hidden_faints(ko_model_final, ko_columns, te_p2, len(test))
